@@ -1,0 +1,97 @@
+use anyhow::{Context, Ok};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{PgPool, Pool, Sqlite};
+use tracing::info;
+
+#[derive(Debug, Clone)]
+pub enum ConnectionPool {
+    Postgres(PgPool),
+    Sqlite(Pool<Sqlite>),
+}
+
+#[derive(Debug, Clone)]
+pub struct Database {
+    pub pool: ConnectionPool,
+}
+
+impl Database {
+    pub async fn connect(connection_string: &str, run_migrations: bool) -> anyhow::Result<Self> {
+        let pool = if connection_string.starts_with("postgres://")
+            || connection_string.starts_with("postgresql://")
+        {
+            info!("Connecting to Postgres database");
+            let pg_pool = PgPoolOptions::new()
+                .max_connections(5)
+                .connect(connection_string)
+                .await
+                .context("Failed to connect to Postgres database")?;
+
+            // these should really be in the migrations instead of the binary but i don't
+            // feel like changing this right now :broken_heart: FIXME:
+            if run_migrations {
+                info!("migrations enabled, running postgres migrations...");
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS users
+                    (
+                        id         VARCHAR NOT NULL PRIMARY KEY,
+                        name       VARCHAR NOT NULL DEFAULT '',
+                        email      VARCHAR NOT NULL DEFAULT '',
+                        password   VARCHAR NOT NULL DEFAULT '',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    "#,
+                )
+                .execute(&pg_pool)
+                .await
+                .context("Failed to create users table")?;
+
+                sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users (email);")
+                    .execute(&pg_pool)
+                    .await
+                    .context("Failed to create users email index")?;
+
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS sessions
+                    (
+                        id          VARCHAR PRIMARY KEY,
+                        exp         TIMESTAMPTZ NOT NULL,
+                        user_id     VARCHAR NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+                        user_agent  VARCHAR NOT NULL DEFAULT ''
+                    );
+                    "#,
+                )
+                .execute(&pg_pool)
+                .await
+                .context("Failed to create sessions table")?;
+
+                info!("postgres migrations happy :)");
+            }
+
+            ConnectionPool::Postgres(pg_pool)
+        } else {
+            info!("Connecting to SQLite database");
+            let sqlite_pool = SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect(connection_string)
+                .await
+                .context("Failed to connect to SQLite database")?;
+
+            if run_migrations {
+                info!("migrations enabled, running sqlite migrations...");
+                sqlx::migrate!()
+                    .run(&sqlite_pool)
+                    .await
+                    .context("Failed to run migrations")?;
+                info!("sqlite migrations happy :)");
+            }
+
+            ConnectionPool::Sqlite(sqlite_pool)
+        };
+
+        Ok(Self { pool })
+    }
+}
