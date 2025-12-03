@@ -2,7 +2,9 @@
 Cargo.lock
 **/*.rs.bk
 # i think i'm the only one who uses this so i won't share it for now
-.env
+
+# this is an example on it should be pushed
+#.env
 .env.prod
 keys/
 logs/*
