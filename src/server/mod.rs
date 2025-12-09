@@ -7,7 +7,7 @@ pub mod services;
 pub mod utils;
 
 use std::future::ready;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -22,6 +22,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{BoxError, Json, Router, error_handling::HandleErrorLayer, http::StatusCode};
 use lazy_static::lazy_static;
+use method::Method;
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use serde_json::json;
 use tower::{ServiceBuilder, buffer::BufferLayer, limit::RateLimitLayer};
@@ -43,14 +44,71 @@ lazy_static! {
     ];
 }
 
+static APP_START_TIME: OnceLock<Instant> = OnceLock::new();
+
+pub fn get_uptime_seconds() -> u64 {
+    APP_START_TIME
+        .get()
+        .map(|start| start.elapsed().as_secs())
+        .unwrap_or(0)
+}
+
+pub fn get_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 pub struct ApplicationServer;
 
+macro_rules! cors_builder {
+    (
+        origins: $origins:expr,
+        preview_origins: $preview_origins:expr,
+        methods: $methods:expr,
+        headers: $headers:expr
+    ) => {{
+        let origins: Vec<String> = $origins;
+        let preview_origins: Vec<String> = $preview_origins;
+
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::predicate(
+                move |origin: &HeaderValue, _request_parts: &RequestParts| {
+                    let origin_str = origin.to_str().unwrap_or("");
+                    if origins.iter().any(|s| s == "*") {
+                        return true;
+                    }
+                    if let Some(host) = origin_str
+                        .strip_prefix("https://")
+                        .or_else(|| origin_str.strip_prefix("http://"))
+                    {
+                        if origins.iter().any(|s| host.ends_with(s.as_str())) {
+                            return true;
+                        }
+                        if preview_origins.iter().any(|s| host.ends_with(s.as_str())) {
+                            return true;
+                        }
+                    }
+                    if origins.iter().any(|s| s.ends_with(origin_str))
+                        || preview_origins.iter().any(|s| s.ends_with(origin_str))
+                    {
+                        return true;
+                    }
+                    false
+                },
+            ))
+            .allow_methods($methods)
+            .allow_headers($headers)
+            .allow_credentials(true)
+    }};
+}
 impl ApplicationServer {
     pub async fn serve(
         config: Arc<AppConfig>,
         db: Database,
         redis_db: RedisDatabase,
     ) -> anyhow::Result<()> {
+        // Initialize app start time for uptime tracking
+        let _ = APP_START_TIME.set(Instant::now());
+
         // do this however you like, i use the prometheus exporter because grafana is nice
         let recorder_handle = PrometheusBuilder::new()
             .set_buckets_for_metric(
@@ -73,98 +131,46 @@ impl ApplicationServer {
 
         // the cors configs are independent to the proxy and general api layers but they can really be combined
         // if needed and it's very easy to do so
-        let cors_origin = config.cors_origin.clone();
-        let preview_cors_origin = config.preview_cors_origin.clone();
-        let cors_origin_proxy = cors_origin.clone();
-        let preview_cors_origin_proxy = preview_cors_origin.clone();
+        let cors_origins: Vec<String> = config
+            .cors_origin
+            .split(",")
+            .map(|s| {
+                s.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .to_string()
+            })
+            .collect();
+        let preview_cors_origins: Vec<String> = config
+            .preview_cors_origin
+            .split(",")
+            .map(|s| {
+                s.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .to_string()
+            })
+            .collect();
 
-        let cors = CorsLayer::new()
-            .allow_origin(AllowOrigin::predicate(
-                move |origin: &HeaderValue, _request_parts: &RequestParts| {
-                    let origin_str = origin.to_str().unwrap_or("");
+        let cors = cors_builder!(
+            origins: cors_origins.clone(),
+            preview_origins: preview_cors_origins.clone(),
+            methods: vec![
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ],
+            headers: vec![AUTHORIZATION, CONTENT_TYPE, ACCEPT]
+        );
 
-                    if preview_cors_origin == "*" {
-                        return true;
-                    }
-
-                    if let Some(host) = origin_str
-                        .strip_prefix("https://")
-                        .or_else(|| origin_str.strip_prefix("http://"))
-                    {
-                        if host == &preview_cors_origin[..] || host.ends_with(&preview_cors_origin)
-                        {
-                            return true;
-                        }
-
-                        if host == &cors_origin[..] || host.ends_with(&cors_origin) {
-                            return true;
-                        }
-
-                        // patch to allow for new domains
-                        // its important to note that this might as well be a simple backdoor if
-                        // you are planning on using this, so please change it
-                        //
-                        // what words do i even put here so someone stumbles into this FIXME: TODO:
-                        if host == "yawnbo.com" || host.ends_with("yawnbo.com") {
-                            return true;
-                        }
-                    }
-
-                    if origin_str == &preview_cors_origin || origin_str == &cors_origin {
-                        return true;
-                    }
-
-                    false
-                },
-            ))
-            .allow_methods([
-                method::Method::GET,
-                method::Method::POST,
-                method::Method::PUT,
-                method::Method::DELETE,
-                method::Method::OPTIONS,
-            ])
-            // this would be chill if it was ANY but for some reason tower doesn't like it (maybe
-            // its fine now because i changed other things but i don't want to test it)
-            .allow_headers([AUTHORIZATION, CONTENT_TYPE, ACCEPT])
-            .allow_credentials(true);
-
-        let proxy_cors = CorsLayer::new()
-            .allow_origin(AllowOrigin::predicate(
-                move |origin: &HeaderValue, _request_parts: &RequestParts| {
-                    let origin_str = origin.to_str().unwrap_or("");
-
-                    if preview_cors_origin_proxy == "*" {
-                        return true;
-                    }
-
-                    if let Some(host) = origin_str
-                        .strip_prefix("https://")
-                        .or_else(|| origin_str.strip_prefix("http://"))
-                    {
-                        if host == &preview_cors_origin_proxy[..]
-                            || host.ends_with(&preview_cors_origin_proxy)
-                        {
-                            return true;
-                        }
-
-                        if host == &cors_origin_proxy[..] || host.ends_with(&cors_origin_proxy) {
-                            return true;
-                        }
-                    }
-
-                    if origin_str == &preview_cors_origin_proxy || origin_str == &cors_origin_proxy
-                    {
-                        return true;
-                    }
-
-                    false
-                },
-            ))
-            .allow_methods([method::Method::GET, method::Method::OPTIONS])
-            .allow_headers([AUTHORIZATION, CONTENT_TYPE, header::RANGE])
-            .expose_headers([header::CONTENT_LENGTH, header::CONTENT_RANGE])
-            .allow_credentials(true);
+        // Reuse the same origins for proxy CORS with different methods/headers
+        let proxy_cors = cors_builder!(
+            origins: cors_origins,
+            preview_origins: preview_cors_origins,
+            methods: vec![Method::GET, Method::OPTIONS],
+            headers: vec![AUTHORIZATION, CONTENT_TYPE, header::RANGE]
+        )
+        .expose_headers([header::CONTENT_LENGTH, header::CONTENT_RANGE]);
 
         // looks kind of messy but its just make routes that are protected with general cors
         // then merging them with the proxy routes
@@ -172,7 +178,7 @@ impl ApplicationServer {
             .nest("/streams", api::stream_controller::StreamController::app())
             .nest("/users", api::user_controller::UserController::app())
             .nest("/movies", api::movie_controller::MovieController::app())
-            .route("/health", get(api::health))
+            .route("/health", get(api::health_controller::health_endpoint))
             .layer(cors);
 
         let proxy_routes = Router::new()
@@ -181,7 +187,7 @@ impl ApplicationServer {
 
         let router = Router::new()
             .nest("/api/v1", api_routes.merge(proxy_routes))
-            .route("/", get(api::health))
+            .route("/", get(api::health_controller::health_endpoint))
             .route("/metrics", get(move || ready(recorder_handle.render())))
             .layer(
                 ServiceBuilder::new()

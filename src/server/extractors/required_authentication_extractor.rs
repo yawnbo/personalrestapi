@@ -97,12 +97,10 @@ where
                     &url_for_verification,
                     &sig,
                 ) {
-                    error!("invalid signature for signed URL");
-                    error!("Signature verification failed:");
-                    error!("  Expected URL: {}", url_for_verification);
-                    error!("  User: {}", user);
-                    error!("  Expiry: {}", expiry);
-                    error!("  Signature: {}", sig);
+                    error!(
+                        "Signature was invalid, url: {}, user: {}, expiry: {}, sig: {}",
+                        url_for_verification, user, expiry, sig
+                    );
                     return Err(Error::Unauthorized);
                 }
 

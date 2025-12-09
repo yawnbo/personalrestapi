@@ -1,6 +1,7 @@
 use anyhow::Context;
 use redis::Client;
 use redis::aio::MultiplexedConnection;
+use std::time::Instant;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -22,5 +23,20 @@ impl RedisDatabase {
         info!("Redis connection established");
 
         Ok(Self { connection })
+    }
+
+    /// Performs a Redis PING health check
+    /// Returns response time in milliseconds
+    pub async fn health_check(&self) -> anyhow::Result<f64> {
+        let start = Instant::now();
+
+        let mut conn = self.connection.clone();
+        let _: String = redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
+            .context("Redis health check failed")?;
+
+        let elapsed = start.elapsed();
+        Ok(elapsed.as_secs_f64() * 1000.0) // Convert to milliseconds
     }
 }

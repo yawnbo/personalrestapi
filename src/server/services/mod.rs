@@ -44,6 +44,9 @@ pub struct Services {
     pub streams: DynStreamsService,
     pub ppvsu: DynPpvsuService,
     pub movies: DynMovieService,
+    pub database: Arc<Database>,
+    pub redis: Arc<RedisDatabase>,
+    pub config: Arc<AppConfig>,
 }
 
 impl Services {
@@ -77,7 +80,7 @@ impl Services {
 
         let ppvsu = Arc::new(PpvsuService::new(redis_repository.clone())) as DynPpvsuService;
         let streams =
-            Arc::new(StreamsService::new(redis_repository, ppvsu.clone())) as DynStreamsService;
+            Arc::new(StreamsService::new(redis_repository.clone(), ppvsu.clone())) as DynStreamsService;
 
         let movies = Arc::new(MovieService::new()) as DynMovieService;
 
@@ -89,6 +92,9 @@ impl Services {
             streams,
             ppvsu,
             movies,
+            database: repository,
+            redis: redis_repository,
+            config,
         }
     }
 }

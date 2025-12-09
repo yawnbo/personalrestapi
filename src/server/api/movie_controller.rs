@@ -172,9 +172,7 @@ impl MovieController {
         let future_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| {
-                crate::server::error::Error::InternalServerErrorWithContext(
-                    "System time before UNIX epoch".to_string(),
-                )
+                Error::InternalServerErrorWithContext("System time before UNIX epoch".to_string())
             })?
             .as_secs() as u32
             + 240; // 4 mins
@@ -242,10 +240,7 @@ impl MovieController {
 
         if !response.status().is_success() {
             tracing::error!("vidlink.pro API returned error: {}", response.status());
-            return Err(Error::NotFound(format!(
-                "Stream not found for movie ID: {}",
-                movie_id
-            )));
+            Error::NotFound(format!("Stream not found for movie ID: {}", movie_id));
         }
 
         // this can be empty for things that aren't out or released yet so i should
@@ -407,9 +402,7 @@ impl MovieController {
         let future_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| {
-                crate::server::error::Error::InternalServerErrorWithContext(
-                    "System time before UNIX epoch".to_string(),
-                )
+                Error::InternalServerErrorWithContext("System time before UNIX epoch".to_string())
             })?
             .as_secs() as u32
             + 240;
@@ -498,6 +491,7 @@ impl MovieController {
         //
         // FIXME:
         let vidlink_response: VidLinkResponse = response.json().await.map_err(|e| {
+            // add a line here to check if the response was empty, in which case we say that
             tracing::error!("failed to parse vidlink.pro response: {}", e);
             Error::InternalServerErrorWithContext("Failed to parse stream response".to_string())
         })?;

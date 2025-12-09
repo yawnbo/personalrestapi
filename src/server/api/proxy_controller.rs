@@ -61,10 +61,23 @@ impl ProxyController {
             target_response.status()
         );
 
-        if !target_response.status().is_success() {
+        // this line gets hit a good amount for some reason and causes soft errors downstream but
+        // they recover when calling the playlist again for some reason, might need to look into it
+        //
+        // in specific i get 520s from the servers which is weird
+        let response_status = target_response.status();
+        if !response_status.is_success() {
+            let target_bytes = target_response.bytes().await.map_or_else(
+                |_| "No response".to_string(),
+                |b| {
+                    String::from_utf8(b.to_vec())
+                        .unwrap_or_else(|_| "Non-UTF8 response".to_string())
+                },
+            );
+            error!("Response from target not successful: {}", target_bytes);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Received fatal status code: {}", target_response.status()),
+                format!("Received fatal status code: {}", response_status),
             ));
         }
 

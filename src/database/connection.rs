@@ -2,6 +2,7 @@ use anyhow::{Context, Ok};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{PgPool, Pool, Sqlite};
+use std::time::Instant;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -93,5 +94,50 @@ impl Database {
         };
 
         Ok(Self { pool })
+    }
+
+    /// Performs a health check by executing a simple query
+    /// Returns response time in milliseconds
+    pub async fn health_check(&self) -> anyhow::Result<f64> {
+        let start = Instant::now();
+
+        match &self.pool {
+            ConnectionPool::Postgres(pool) => {
+                // Simple SELECT 1 query for Postgres
+                sqlx::query("SELECT 1")
+                    .fetch_one(pool)
+                    .await
+                    .context("PostgreSQL health check failed")?;
+            }
+            ConnectionPool::Sqlite(pool) => {
+                // Simple SELECT 1 query for SQLite
+                sqlx::query("SELECT 1")
+                    .fetch_one(pool)
+                    .await
+                    .context("SQLite health check failed")?;
+            }
+        }
+
+        let elapsed = start.elapsed();
+        Ok(elapsed.as_secs_f64() * 1000.0) // Convert to milliseconds
+    }
+
+    /// Gets current pool statistics
+    /// Returns (active_connections, max_connections)
+    pub fn pool_stats(&self) -> (u32, u32) {
+        match &self.pool {
+            ConnectionPool::Postgres(pool) => {
+                let pool_idle = pool.num_idle() as u32;
+                let pool_max = pool.options().get_max_connections();
+                let pool_active = pool_max - pool_idle;
+                (pool_active, pool_max)
+            }
+            ConnectionPool::Sqlite(pool) => {
+                let pool_idle = pool.num_idle() as u32;
+                let pool_max = pool.options().get_max_connections();
+                let pool_active = pool_max - pool_idle;
+                (pool_active, pool_max)
+            }
+        }
     }
 }
