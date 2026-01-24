@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS users
+(
+    id         TEXT NOT NULL PRIMARY KEY,
+    name       TEXT NOT NULL DEFAULT '',
+    email      TEXT NOT NULL DEFAULT '',
+    password   TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users (email);
